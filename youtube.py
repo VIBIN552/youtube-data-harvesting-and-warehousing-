@@ -376,6 +376,20 @@ def fetch_data(query):
     df = pd.read_sql(query, connection)
     connection.close()
     return df
+# Function to migrate new channel IDs into the database
+
+def add_channel_to_db(channel_id):
+    connection = connect_to_db()
+    cursor = connection.cursor()
+    insert_query = """
+        INSERT INTO channels (channel_id) VALUES (%s)
+        ON CONFLICT (channel_id) DO NOTHING;
+    """
+    cursor.execute(insert_query, (channel_id,))
+    connection.commit()
+    cursor.close()
+    connection.close()
+    st.success(f"Channel ID {channel_id} added successfully!")
 
 # Define all the queries in a dictionary
 queries = {
@@ -478,3 +492,12 @@ if question:
     # Display the data in a table format
     st.write(f"**{question.split('.')[1].strip()}**")
     st.dataframe(data)
+# Section to add new channel IDs
+
+st.sidebar.subheader("Add New Channel ID")
+new_channel_id = st.sidebar.text_input("Enter new YouTube Channel ID:")
+if st.sidebar.button("Add Channel ID"):
+    if new_channel_id:
+        add_channel_to_db(new_channel_id)
+    else:
+        st.sidebar.warning("Please enter a Channel ID.")
