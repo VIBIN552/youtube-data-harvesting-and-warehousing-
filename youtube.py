@@ -376,27 +376,125 @@ def fetch_data(query):
     df = pd.read_sql(query, connection)
     connection.close()
     return df
-# Function to migrate new channel IDs into the database
+# Function to fetch channel details using the YouTube Data API
+def fetch_channel_details(channel_id):
+    api_key = "AIzaSyC_2Hs1bPxIPbPHakmp4T2CuwCzRRPM8tg"  
+    youtube = build('youtube', 'v3', developerKey=api_key)
+    
+    try:
+        request = youtube.channels().list(
+            part="snippet,statistics,contentDetails",
+            id=channel_id
+        )
+        response = request.execute()
+        items = response.get("items", [])
+        
+        if not items:
+            return None
 
-def add_channel_to_db(channel_id):
+        channel_data = items[0]
+        channel_name = channel_data["snippet"]["title"]
+        description = channel_data["snippet"]["description"]
+        subscribers = channel_data["statistics"].get("subscriberCount", 0) or 0
+        views = channel_data["statistics"].get("viewCount", 0) or 0
+        total_videos = channel_data["statistics"].get("videoCount", 0) or 0
+        playlist_id = channel_data["contentDetails"]["relatedPlaylists"]["uploads"]
+
+        return (channel_name, channel_id, int(subscribers), int(views), int(total_videos), description, playlist_id)
+    
+    except Exception as e:
+        st.error(f"Error fetching channel details: {e}")
+        return None
+
+# Function to add channel details to PostgreSQL
+def add_channel_to_db(channel_details):
     connection = connect_to_db()
     cursor = connection.cursor()
-    insert_query = """
-        INSERT INTO channels (channel_id) VALUES (%s)
-        ON CONFLICT (channel_id) DO NOTHING;
-    """
-    cursor.execute(insert_query, (channel_id,))
-    connection.commit()
-    cursor.close()
-    connection.close()
-    st.success(f"Channel ID {channel_id} added successfully!")
+    
+    try:
+        insert_query = """
+            INSERT INTO channels (Channel_Name, Channel_Id, Subscribers, Views, Total_Videos, Description, Playlist_Id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (Channel_Id) DO UPDATE SET
+                Channel_Name = EXCLUDED.Channel_Name,
+                Subscribers = EXCLUDED.Subscribers,
+                Views = EXCLUDED.Views,
+                Total_Videos = EXCLUDED.Total_Videos,
+                Description = EXCLUDED.Description,
+                Playlist_Id = EXCLUDED.Playlist_Id;
+        """
+        cursor.execute(insert_query, channel_details)
+        connection.commit()
+        st.success("Channel data migrated to PostgreSQL successfully!")
+    except Exception as e:
+        st.error(f"Error migrating channel data to PostgreSQL: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+# Streamlit Sidebar for adding and migrating channel IDs
+st.sidebar.subheader("Manage Channel IDs")
+
+# Input for a new channel ID
+new_channel_id = st.sidebar.text_input("Enter new YouTube Channel ID:")
+
+# Button to fetch and migrate channel data
+if st.sidebar.button("Fetch and Migrate"):
+    if new_channel_id:
+        channel_details = fetch_channel_details(new_channel_id)
+        if channel_details:
+            st.write("### Fetched Channel Details")
+            st.write(pd.DataFrame([channel_details], columns=[
+                "Channel Name", "Channel ID", "Subscribers", "Views", "Total Videos", "Description", "Playlist ID"
+            ]))
+            add_channel_to_db(channel_details)
+        else:
+            st.warning("No channel data found for the provided ID.")
+    else:
+        st.sidebar.warning("Please enter a valid Channel ID.")
+        
+# Function to retrieve channel details from the database
+def get_all_channels_from_db():
+    connection = connect_to_db()
+    cursor = connection.cursor()
+    
+    try:
+        fetch_query = "SELECT Channel_Name, Channel_Id, Subscribers, Views, Total_Videos, Description, Playlist_Id FROM channels;"
+        cursor.execute(fetch_query)
+        results = cursor.fetchall()
+        columns = ["Channel Name", "Channel ID", "Subscribers", "Views", "Total Videos", "Description", "Playlist ID"]
+        return pd.DataFrame(results, columns=columns)
+    except Exception as e:
+        st.error(f"Error retrieving channel data: {e}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()        
+# Section to display all migrated channel details
+st.subheader("Migrated Channel Details")
+
+if st.button("View All Channels"):
+    channel_data = get_all_channels_from_db()
+    if channel_data is not None and not channel_data.empty:
+        st.write("### Channels in PostgreSQL Database")
+        st.dataframe(channel_data)
+    else:
+        st.warning("No channel data available in the database.")  
 
 # Define all the queries in a dictionary
 queries = {
     "1.What are the names of all the videos and their corresponding channels?": """
-        SELECT title AS Video_Title, channel_name AS Channel_Name
-        FROM videos
-        ORDER BY channel_name;
+        SELECT 
+    COALESCE(v.title, 'No Videos') AS Video_Title, 
+    c.channel_name AS Channel_Name
+        FROM 
+            channels c
+        LEFT JOIN 
+            videos v 
+        ON 
+            c.channel_id = v.channel_id
+        ORDER BY 
+            c.channel_name;
     """,
     "2.Which channels have the most number of videos, and how many videos do they have?": """
         SELECT channel_name AS Channel_Name, total_videos AS Total_Videos
@@ -483,6 +581,16 @@ question = st.selectbox(
     'Select the question to run:',
     list(queries.keys())
 )
+
+# Fetch and display the corresponding data
+if question:
+    query = queries[question]
+    data = fetch_data(query)
+    
+    # Display the data in a table format
+    st.write(f"**{question.split('.')[1].strip()}**")
+    st.dataframe(data)
+    
 
 # Fetch and display the corresponding data
 if question:
